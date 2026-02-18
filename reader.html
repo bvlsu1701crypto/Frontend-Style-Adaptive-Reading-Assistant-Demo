@@ -220,7 +220,8 @@
     if (!pages.length) return;
     const start = Math.max(0, lastRecapPage + 1);
     const end = pageIndex;
-    const text = pages.slice(start, end + 1).join('');
+    const rawText = pages.slice(start, end + 1).join('');
+    const text = rawText.slice(-4000);
     if (!text.trim()) return;
 
     recapModal.classList.remove('hidden');
