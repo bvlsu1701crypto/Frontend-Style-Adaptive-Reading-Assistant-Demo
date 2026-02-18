@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <title>Reading</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1 id="title">Reading</h1>
+    <div class="reader-controls">
+      <button class="pill" id="recapBtn" disabled>Recap</button>
+      <a class="pill light" href="index.html">Back to shelf</a>
+      <span class="progress-inline" id="progressText">Progress: 0%</span>
+      <span class="progress-inline" id="readScope">Read: 0 chars</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="controls" style="display:none"></section>
+
+    <section class="reader" id="readerWrap">
+      <div id="readerTitle">Loading…</div>
+      <!-- front matter removed -->
+      <div id="reader" class="reader-page"></div>
+      <div id="copyright" class="copyright">—</div>
+      <div class="tap-zone left" id="prevZone"></div>
+      <div class="tap-zone right" id="nextZone"></div>
+      <div class="page-indicator" id="pageIndicator">1 / 1</div>
+      <div class="nav-arrow left">‹</div>
+      <div class="nav-arrow right">›</div>
+    </section>
+
+    <div id="recapModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Recap</h2>
+          <button id="closeModal">Close</button>
+        </div>
+        <div class="recap-box">
+          <div class="recap-item" id="recapSingle">
+            <!-- title removed -->
+            <div class="loading" id="recapLoading" style="display:none;">
+              <span class="spinner"></span>
+              <span>Generating recap...</span>
+            </div>
+            <p id="summary">—</p>
+          </div>
+          <div class="recap-item" id="roleBlock" style="display:none;">
+            <h3>Role description (Step 1)</h3>
+            <p id="roleDef">—</p>
+          </div>
+          <div class="recap-item">
+            <p id="confidence" class="privacy-note">🔒 Privacy mode: the recap is generated only from local context; the full book is not uploaded. AI output is for memory assistance—please refer to the original text.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+  const recapBtn = document.getElementById('recapBtn');
+  const reader = document.getElementById('reader');
+  const readerWrap = document.getElementById('readerWrap');
+  const readerTitle = document.getElementById('readerTitle');
+  const progressText = document.getElementById('progressText');
+  const readScope = document.getElementById('readScope');
+  const summaryEl = document.getElementById('summary');
+  const recapSingle = document.getElementById('recapSingle');
+  const recapABCBlocks = Array.from(document.querySelectorAll('.recap-abc'));
+  const recapLoading = document.getElementById('recapLoading');
+  const roleBlock = document.getElementById('roleBlock');
+  const roleDefEl = document.getElementById('roleDef');
+  // keywords/lead removed for backend output
+  const pageIndicator = document.getElementById('pageIndicator');
+  const copyright = document.getElementById('copyright');
+  const prevZone = document.getElementById('prevZone');
+  const nextZone = document.getElementById('nextZone');
+  const recapModal = document.getElementById('recapModal');
+  const closeModal = document.getElementById('closeModal');
+  const titleEl = document.getElementById('title');
+
+  let fullText = '';
+  let pages = [];
+  let pageIndex = 0;
+  let bookId = '';
+  let lastRecapPage = -1;
+
+  const IS_LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
+  const API_URL = IS_LOCAL
+    ? 'http://localhost:8787/recap'
+    : 'https://style-adaptive-reading-assistant-backend.onrender.com/recap';
+  prevZone.addEventListener('click', () => flipPage(-1));
+  nextZone.addEventListener('click', () => flipPage(1));
+  recapBtn.addEventListener('click', openRecap);
+  closeModal.addEventListener('click', () => recapModal.classList.add('hidden'));
+
+  // swipe
+  let startX = 0;
+  readerWrap.addEventListener('touchstart', (e) => {
+    startX = e.touches[0].clientX;
+  }, { passive: true });
+  readerWrap.addEventListener('touchend', (e) => {
+    const endX = e.changedTouches[0].clientX;
+    const dx = endX - startX;
+    if (Math.abs(dx) > 40) {
+      if (dx < 0) flipPage(1);
+      else flipPage(-1);
+    }
+  });
+
+  // long press recap
+  let pressTimer = null;
+  readerWrap.addEventListener('touchstart', () => {
+    pressTimer = setTimeout(openRecap, 500);
+  });
+  readerWrap.addEventListener('touchend', () => clearTimeout(pressTimer));
+  readerWrap.addEventListener('touchmove', () => clearTimeout(pressTimer));
+
+  // save on background
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) saveState();
+  });
+
+  const BOOK_TITLES = {
+    'ming.txt': 'Decline and Fall of the Roman Empire (Gibbon, 1776)',
+    'bird.txt': 'Pride and Prejudice (Austen, 1813)',
+    'logic.txt': 'On the Origin of Species (Darwin, 1859)',
+    'up.txt': 'Self-Reliance (Emerson, 1841)',
+    'talk.txt': 'The Interpretation of Dreams (Freud, 1899)',
+    'frog.txt': 'The Communist Manifesto (Marx & Engels, 1848)'
+  };
+  const BOOK_COPYRIGHT = {
+    'ming.txt': 'Decline and Fall of the Roman Empire — Edward Gibbon. Excerpt used for demo; please support the original work.',
+    'logic.txt': 'On the Origin of Species — Charles Darwin. Excerpt used for demo; please support the original work.',
+    'bird.txt': 'Pride and Prejudice — Jane Austen. Excerpt used for demo; please support the original work.',
+    'frog.txt': 'The Communist Manifesto — Karl Marx & Friedrich Engels. Excerpt used for demo; please support the original work.',
+    'talk.txt': 'The Interpretation of Dreams — Sigmund Freud. Excerpt used for demo; please support the original work.',
+    'up.txt': 'Self-Reliance — Ralph Waldo Emerson. Excerpt used for demo; please support the original work.'
+  };
+
+  const params = new URLSearchParams(location.search);
+  const file = params.get('file');
+  if (!file) {
+    readerTitle.textContent = 'No book selected';
+  } else {
+    bookId = file;
+    const title = BOOK_TITLES[file] || file;
+    titleEl.textContent = title;
+    readerTitle.textContent = `Title: ${title}`;
+    copyright.textContent = BOOK_COPYRIGHT[file] || '';
+    loadSample(file);
+  }
+
+  async function loadSample(fileName) {
+    const title = BOOK_TITLES[fileName] || fileName;
+    titleEl.textContent = title;
+    readerTitle.textContent = `Title: ${title}`;
+    const safeName = encodeURIComponent(fileName);
+    const res = await fetch(`samples/${safeName}`);
+    if (!res.ok) {
+      readerTitle.textContent = `Load failed (${res.status})`;
+      return;
+    }
+    const text = await res.text();
+    loadText(text);
+
+    // restore last position & auto recap
+    const state = loadState();
+    if (state && typeof state.pageIndex === 'number') {
+      pageIndex = Math.min(state.pageIndex, pages.length - 1);
+      renderPage();
+      lastRecapPage = typeof state.lastRecapPage === 'number' ? state.lastRecapPage : -1;
+    }
+  }
+
+  function loadText(text) {
+    fullText = sanitize(text);
+    pages = paginateWithToc(fullText, 900);
+    pageIndex = 0;
+    renderPage();
+    recapBtn.disabled = false;
+  }
+
+  function renderPage() {
+    const page = pages[pageIndex] || '';
+    reader.innerHTML = formatPage(page);
+    if (!reader.textContent.trim()) {
+      reader.textContent = page;
+    }
+    pageIndicator.textContent = `${pageIndex + 1} / ${pages.length || 1}`;
+    updateProgress();
+  }
+
+  function flipPage(dir) {
+    if (!pages.length) return;
+    const next = Math.min(Math.max(0, pageIndex + dir), pages.length - 1);
+    if (next === pageIndex) return;
+    reader.classList.add(dir > 0 ? 'turn-next' : 'turn-prev');
+    setTimeout(() => {
+      pageIndex = next;
+      renderPage();
+      reader.classList.remove('turn-next', 'turn-prev');
+      saveState();
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }, 200);
+  }
+
+  function updateProgress() {
+    if (!pages.length) return;
+    const readChars = pages.slice(0, pageIndex + 1).join('').length;
+    const progress = Math.min(1, readChars / fullText.length);
+    progressText.textContent = `Progress: ${Math.round(progress * 100)}%`;
+    readScope.textContent = `Read: ${readChars} chars`;
+  }
+
+  async function openRecap() {
+    if (!pages.length) return;
+    const start = Math.max(0, lastRecapPage + 1);
+    const end = pageIndex;
+    const text = pages.slice(start, end + 1).join('');
+    if (!text.trim()) return;
+
+    recapModal.classList.remove('hidden');
+    try {
+      recapSingle.style.display = 'block';
+      roleBlock.style.display = 'none';
+      recapLoading.style.display = 'flex';
+      summaryEl.textContent = '';
+      const r = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, bookId })
+      });
+      const data = await r.json();
+      recapLoading.style.display = 'none';
+      let out = data.output || data.error || '—';
+      out = out.replace(/^\s*(summary[:：]|quick recap[:：]|recap[:：]|overview[:：])\s*/i, '');
+      out = out.replace(/^(this (section|passage|part) (describes|covers|summarizes).{0,60}?[:：]?\s*)/i, '');
+      summaryEl.textContent = out || '—';
+      lastRecapPage = pageIndex;
+      saveState();
+    } catch (e) {
+      recapLoading.style.display = 'none';
+      summaryEl.textContent = 'Backend request failed: ' + String(e);
+    }
+  }
+
+  function saveState() {
+    if (!bookId || !pages.length) return;
+    const state = {
+      pageIndex,
+      lastRecapPage,
+      updatedAt: Date.now()
+    };
+    localStorage.setItem(`recap:${bookId}`, JSON.stringify(state));
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(`recap:${bookId}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  function sanitize(text) {
+    let t = text.replace(/\r/g, '');
+    // normalize multiple blank lines: default max 2
+    t = t.replace(/\n{3,}/g, '\n\n');
+
+    // keep paragraph breaks, but merge single line breaks inside paragraphs
+    // 1) protect paragraph breaks
+    const PAR = '__PARA__';
+    t = t.replace(/\n\n+/g, `\n${PAR}\n`);
+    // 2) merge remaining single newlines into spaces
+    t = t.replace(/\n+/g, ' ');
+    // 3) restore paragraph breaks
+    t = t.replace(new RegExp(`\\s*${PAR}\\s*`, 'g'), '\n\n');
+
+    // if contains contents/foreword section, compress blank lines within those parts to 1
+    if (/^\s*contents/m.test(t) || /^\s*(foreword|preface|introduction)/mi.test(t)) {
+      t = t.replace(/(contents[\s\S]*?)(\n{3,})/gi, (m, p1) => p1.replace(/\n{2,}/g, '\n'));
+      t = t.replace(/((foreword|preface|introduction)[\s\S]*?)(\n{3,})/gi, (m, p1) => p1.replace(/\n{2,}/g, '\n'));
+    }
+    return t.trim();
+  }
+
+  function paginate(text, size) {
+    const pages = [];
+    for (let i = 0; i < text.length; i += size) {
+      let chunk = text.slice(i, i + size);
+      // avoid ending a page with a single-letter token
+      if (/\b[A-Za-z]\b\s*$/.test(chunk) && i + size < text.length) {
+        // move the last single letter to the next page by trimming it here
+        chunk = chunk.replace(/\b([A-Za-z])\b\s*$/, '');
+        // adjust next page start by rewinding one character
+        i -= 1;
+      }
+      pages.push(chunk);
+    }
+
+    // post-process: avoid starting a page with a single-letter token
+    for (let p = 1; p < pages.length; p++) {
+      const m = pages[p].match(/^\s*([A-Za-z])\s+/);
+      if (m) {
+        const letter = m[1];
+        pages[p] = pages[p].replace(/^\s*([A-Za-z])\s+/, '');
+        pages[p - 1] = (pages[p - 1] || '').replace(/\s*$/, '') + ' ' + letter + ' ';
+      }
+    }
+    return pages;
+  }
+
+  function findFirstChapterIndex(text){
+    const lines = text.split('\n');
+    let offset = 0;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/^contents/i.test(trimmed)) { offset += line.length + 1; continue; }
+      if (/^(chapter|part|book)\s+[\divxlc]+/i.test(trimmed)) {
+        return offset;
+      }
+      offset += line.length + 1;
+    }
+    return -1;
+  }
+
+  function paginateWithToc(text, size){
+    return paginate(text, size);
+  }
+
+  function escapeHtml(str){
+    return str.replace(/[&<>]/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[s]));
+  }
+
+  function formatPage(text){
+    let lines = text.split('\n');
+    const merged = [];
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      const line = raw.trim();
+      if (!line) { merged.push(''); continue; }
+      // merge single-character lines into next line
+      if (line.length === 1 && i + 1 < lines.length) {
+        lines[i + 1] = raw + lines[i + 1];
+        continue;
+      }
+      merged.push(raw);
+    }
+
+    // fix orphan single letters at line start/end (display only; text not modified)
+    for (let i = 0; i < merged.length; i++) {
+      let cur = merged[i];
+      if (!cur || !cur.trim()) continue;
+
+      // if line starts with a single letter token, attach to previous line
+      if (i > 0) {
+        const m = cur.match(/^\s*([A-Za-z])\s+(.*)$/);
+        if (m && merged[i - 1] && merged[i - 1].trim()) {
+          merged[i - 1] = merged[i - 1].replace(/\s+$/,'') + m[1];
+          cur = m[2];
+        }
+      }
+
+      // if line ends with a single letter token, attach to next line
+      if (i + 1 < merged.length) {
+        const m2 = cur.match(/^(.*?)(?:\s|^)([A-Za-z])\s*$/);
+        if (m2 && m2[1] && merged[i + 1] && merged[i + 1].trim()) {
+          merged[i + 1] = m2[2] + merged[i + 1];
+          cur = m2[1];
+        }
+      }
+
+      merged[i] = cur;
+    }
+
+    const out = [];
+    for (const raw of merged) {
+      const line = raw.trim();
+      if (!line) { out.push('<div class="para-gap"></div>'); continue; }
+      if (isHeading(line)) {
+        out.push(`<h2><strong>${escapeHtml(raw)}</strong></h2>`);
+      } else {
+        out.push(`<div>${escapeHtml(raw)}</div>`);
+      }
+    }
+    return out.join('\n');
+  }
+
+  function isHeading(line){
+    return /^(chapter|part|book)\s+[\divxlc]+|^(contents|preface|foreword|introduction|prologue|epilogue|appendix|afterword)/i.test(line);
+  }
+
+  function summarize(text) {
+    const sentences = text.split(/(?<=[.!?])\s*/).filter(Boolean);
+    const freq = wordFreq(text);
+    const scored = sentences.map(s => ({ s, score: scoreSentence(s, freq) }))
+      .sort((a,b) => b.score - a.score)
+      .slice(0, 3)
+      .map(x => x.s.trim());
+
+    const keywords = Object.entries(freq)
+      .sort((a,b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([w]) => w);
+
+    return { summary: scored.join(' '), keywords, lead: scored[0] || '' };
+  }
+
+  function wordFreq(text) {
+    const tokens = tokenize(text);
+    const stop = new Set(['the','a','an','and','or','but','if','then','so','because','as','of','to','in','on','for','with','by','at','from','into','out','about','over','under','this','that','these','those','is','are','was','were','be','been','being','it','its','their','they','them','we','you','he','she','his','her','not','no','can','could','should','would','may','might','will','just','more','most','some','any','each','other']);
+    const freq = {};
+    for (const t of tokens) {
+      if (stop.has(t)) continue;
+      freq[t] = (freq[t] || 0) + 1;
+    }
+    return freq;
+  }
+
+  function tokenize(text) {
+    const cleaned = text.replace(/[\d\p{P}\p{S}]/gu, ' ');
+    const hasSpaces = /\s/.test(cleaned);
+    if (hasSpaces) return cleaned.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
+    const chars = cleaned.replace(/\s+/g, '');
+    const grams = [];
+    for (let i = 0; i < chars.length - 1; i++) {
+      const gram = chars.slice(i, i + 2);
+      grams.push(gram);
+    }
+    return grams;
+  }
+
+  function scoreSentence(sentence, freq) {
+    const tokens = tokenize(sentence);
+    return tokens.reduce((sum, t) => sum + (freq[t] || 0), 0);
+  }
+  </script>
+</body>
+</html>

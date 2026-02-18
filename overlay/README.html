@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Recap Overlay Guide</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,Helvetica Neue,sans-serif;line-height:1.8;padding:16px;">
+<h1>Recap Overlay (Floating Button)</h1>
+<p>Use this to demo the recap overlay on the WeRead web reader.</p>
+<h2>Steps</h2>
+<ol>
+<li>Start a local server: <code>python3 -m http.server 8096</code></li>
+<li>Open the WeRead web reader (weread.qq.com)</li>
+<li>Save the bookmarklet below in your browser</li>
+<li>Open any reading page and click the bookmarklet to inject the overlay</li>
+</ol>
+<h2>Bookmarklet</h2>
+<pre>javascript:(()=>{const s=document.createElement('script');s.src='http://192.168.0.105:8096/overlay/recap.js';document.body.appendChild(s);})();</pre>
+<p>Note: Replace the IP and port with your actual local address.</p>
+</body></html>
